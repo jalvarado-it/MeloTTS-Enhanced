@@ -29,6 +29,13 @@
   - Optimized checkpoint management with configurable retention
   - Enhanced evaluation with memory-efficient processing
 
+- **Checkpoint System Fixes**:
+  - Fixed optimizer state loading by changing `skip_optimizer` default from `True` to `False`
+  - Improved checkpoint failure handling with proper logging
+  - Fixed global step tracking for consistent checkpoint naming
+  - Enhanced checkpoint save logging with detailed path information
+  - Corrected global step increment to only occur after gradient accumulation completes
+
 - **Configuration Optimizations**:
   - Dynamic batch size capping for low VRAM systems
   - Segment size optimization for memory efficiency

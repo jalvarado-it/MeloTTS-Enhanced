@@ -268,17 +268,17 @@ def run():
             _, _, dur_resume_lr, epoch_str = utils.load_checkpoint(
                 utils.latest_checkpoint_path(hps.model_dir, "DUR_*.pth"),
                 net_dur_disc, optim_dur_disc,
-                skip_optimizer=getattr(hps.train, 'skip_optimizer', True),
+                skip_optimizer=getattr(hps.train, 'skip_optimizer', False),
             )
         _, optim_g, g_resume_lr, epoch_str = utils.load_checkpoint(
             utils.latest_checkpoint_path(hps.model_dir, "G_*.pth"),
             net_g, optim_g,
-            skip_optimizer=getattr(hps.train, 'skip_optimizer', True),
+            skip_optimizer=getattr(hps.train, 'skip_optimizer', False),
         )
         _, optim_d, d_resume_lr, epoch_str = utils.load_checkpoint(
             utils.latest_checkpoint_path(hps.model_dir, "D_*.pth"),
             net_d, optim_d,
-            skip_optimizer=getattr(hps.train, 'skip_optimizer', True),
+            skip_optimizer=getattr(hps.train, 'skip_optimizer', False),
         )
         
         # Set initial learning rates
@@ -293,6 +293,8 @@ def run():
         global_step = (epoch_str - 1) * len(train_loader)
     except Exception as e:
         print(f"Checkpoint loading failed: {e}")
+        if logger:
+            logger.warning(f"No valid checkpoints found or checkpoint loading failed: {e}. Starting from scratch.")
         epoch_str = 1
         global_step = 0
     
@@ -514,7 +516,8 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
         
         # Logging and evaluation (only after gradient steps)
         if rank == 0 and (batch_idx + 1) % accumulation_steps == 0:
-            actual_global_step = global_step // accumulation_steps
+            # Use global_step directly for consistent checkpoint naming
+            actual_global_step = global_step
             
             if actual_global_step % (hps.train.log_interval * 2) == 0:  # Less frequent logging
                 lr = optim_g.param_groups[0]["lr"]
@@ -537,20 +540,30 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
             if actual_global_step % (hps.train.eval_interval * 2) == 0 and actual_global_step > 0:  # Less frequent evaluation
                 evaluate(hps, net_g, eval_loader, writer_eval)
                 
-                # Save checkpoints
+                # Save checkpoints using global_step instead of actual_global_step
+                checkpoint_path_g = os.path.join(hps.model_dir, f"G_{global_step}.pth")
+                checkpoint_path_d = os.path.join(hps.model_dir, f"D_{global_step}.pth")
+                
                 utils.save_checkpoint(
                     net_g, optim_g, hps.train.learning_rate, epoch,
-                    os.path.join(hps.model_dir, f"G_{actual_global_step}.pth"),
+                    checkpoint_path_g,
                 )
                 utils.save_checkpoint(
                     net_d, optim_d, hps.train.learning_rate, epoch,
-                    os.path.join(hps.model_dir, f"D_{actual_global_step}.pth"),
+                    checkpoint_path_d,
                 )
+                
+                if logger:
+                    logger.info(f"Saved checkpoints at global_step {global_step}: {checkpoint_path_g}, {checkpoint_path_d}")
+                
                 if net_dur_disc is not None:
+                    checkpoint_path_dur = os.path.join(hps.model_dir, f"DUR_{global_step}.pth")
                     utils.save_checkpoint(
                         net_dur_disc, optim_dur_disc, hps.train.learning_rate, epoch,
-                        os.path.join(hps.model_dir, f"DUR_{actual_global_step}.pth"),
+                        checkpoint_path_dur,
                     )
+                    if logger:
+                        logger.info(f"Saved duration discriminator checkpoint: {checkpoint_path_dur}")
                 
                 # Clean old checkpoints
                 keep_ckpts = getattr(hps.train, "keep_ckpts", 3)  # Reduced from 5
@@ -561,7 +574,9 @@ def train_and_evaluate(rank, epoch, hps, nets, optims, schedulers, scaler, loade
                         sort_by_time=True,
                     )
         
-        global_step += 1
+        # Only increment global_step after gradient accumulation is complete
+        if (batch_idx + 1) % accumulation_steps == 0:
+            global_step += 1
 
     if rank == 0:
         progress_percent = (epoch / hps.train.epochs) * 100
